@@ -1,0 +1,37 @@
+# This is a basic workflow to help you get started with Actions
+name: SAP CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  sap-ci:
+    runs-on: ubuntu-latest
+
+    env:
+      SAP_USER: ${{ secrets.SAP_USER }}
+      SAP_PASS: ${{ secrets.SAP_PASS }}
+      SAP_HOST: ${{ secrets.SAP_HOST }}
+      SAP_CLIENT: ${{ secrets.SAP_CLIENT }}
+      SAP_SYSNR: ${{ secrets.SAP_SYSNR }}
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install PyRFC
+        run: |
+          pip install pyrfc
+
+      - name: Run ABAP Unit Tests
+        run: python scripts/run_abap_unit.py
+
+      - name: Trigger RFC / Interface
+        run: python scripts/trigger_rfc.py
