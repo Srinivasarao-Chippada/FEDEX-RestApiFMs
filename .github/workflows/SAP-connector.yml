@@ -1,0 +1,5 @@
+- name: Install SAP Connector
+  run: |
+    pip install pyrfc  # or
+    pip install pyodata  # for OData services
+    pip install requests  # for REST APIs
