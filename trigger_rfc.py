@@ -9,7 +9,7 @@ conn = Connection(
     client=os.environ['SAP_CLIENT']
 )
 
-result = conn.call('Z_TRIGGER_FEDEX')
+result = conn.call('/PWEAVER/SHIP_FEDEX')
 
 print(result)
 
