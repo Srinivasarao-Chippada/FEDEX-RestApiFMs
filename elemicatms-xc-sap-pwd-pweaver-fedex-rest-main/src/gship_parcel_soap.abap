@@ -1,0 +1,2195 @@
+FUNCTION /PWEAVER/GSHIP_PARCEL.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     VALUE(SHIPPER) TYPE  /PWEAVER/ECSADDRESS OPTIONAL
+*"     VALUE(SHIPTO) TYPE  /PWEAVER/ECSADDRESS OPTIONAL
+*"     VALUE(SHIPMENT) TYPE  /PWEAVER/ECSSHIPMENT OPTIONAL
+*"     VALUE(PRODUCT) TYPE  /PWEAVER/PRODUCT OPTIONAL
+*"     VALUE(XCARRIER) TYPE  /PWEAVER/XSERVER OPTIONAL
+*"     VALUE(CARRIERCONFIG) TYPE  /PWEAVER/CCONFIG OPTIONAL
+*"     VALUE(PRINTERCONFIG) TYPE  /PWEAVER/PRINTCF OPTIONAL
+*"  EXPORTING
+*"     VALUE(TRACKINGINFO) TYPE  /PWEAVER/ECSTRACK
+*"     VALUE(LABELDATA1) TYPE  /PWEAVER/LABELDATA_TAB
+*"  TABLES
+*"      PACKAGES STRUCTURE  /PWEAVER/ECSPACKAGES OPTIONAL
+*"      INT_COMD STRUCTURE  /PWEAVER/COMMODITY OPTIONAL
+*"      HAZARD STRUCTURE  /PWEAVER/ECSHAZARD OPTIONAL
+*"      EMAILLIST TYPE  /PWEAVER/EMAIL_TT OPTIONAL
+*"      LABELDATA TYPE  /PWEAVER/LABELDATA_TAB OPTIONAL
+*"  EXCEPTIONS
+*"      ERROR
+*"----------------------------------------------------------------------
+
+  DATA: L_XML_NODE TYPE REF TO IF_IXML_ELEMENT,             "#EC NEEDED
+        L_NAME     TYPE STRING,                             "#EC NEEDED
+        L_VALUE    TYPE STRING.
+
+  DATA :"LABELDATA    TYPE TABLE OF /PWEAVER/LABELDATA,
+*        LS_LABELDATA TYPE /PWEAVER/LABELDATA,
+        WS_RESP      TYPE STRING.
+*dsp
+** Build CArrier Block
+  DATA : LT_XML      TYPE TABLE OF STRING,
+         LS_XML      TYPE STRING,
+         REQUEST_XML TYPE STRING,
+         FILENAME    TYPE STRING.
+  DATA : GS_DATE TYPE CHAR10 .
+  DATA: LT_SHIPURL TYPE TABLE OF /PWEAVER/SHIPURL.
+  DATA: COMMUNICATION_URL TYPE /PWEAVER/SHIPURL.
+  DATA: V_SHIPDATE  TYPE SYDATUM.
+  DATA: GT_CARRIER_BLOCK TYPE /PWEAVER/STRING_TAB.
+  DATA GT_PWC_BLOCK TYPE /PWEAVER/STRING_TAB.
+  DATA RESPONSE_XML TYPE /PWEAVER/TT_STRING.
+  COMMUNICATION_URL-PWMODULE = 'ECSSHIP'.
+
+  DATA: URL       TYPE /PWEAVER/URL,
+        LS_BROKER TYPE /PWEAVER/ECSADDRESS,
+        LS_HOLD   TYPE /PWEAVER/ECSADDRESS,
+        LV_PHONE  TYPE FIST-SEARCHW.
+
+
+* BOC
+* Removing Special Characters for shipto telephone
+  IF SHIPTO-TELEPHONE IS NOT INITIAL. " If we pass empty parameter sometimes will lead to dump.
+    LV_PHONE = SHIPTO-TELEPHONE.
+    CALL FUNCTION 'SF_SPECIALCHAR_DELETE'
+      EXPORTING
+        WITH_SPECIALCHAR    = LV_PHONE
+      IMPORTING
+        WITHOUT_SPECIALCHAR = LV_PHONE
+      EXCEPTIONS
+        RESULT_WORD_EMPTY   = 1
+        OTHERS              = 2.
+    IF SY-SUBRC <> 0.
+      MESSAGE 'Unable to Remove Special Characters in Telephone' TYPE 'E' DISPLAY LIKE 'I'.
+    ENDIF.
+    SHIPTO-TELEPHONE = LV_PHONE.
+
+* Even after using FM below SPecial characters are not eleminating.
+    REPLACE ALL OCCURRENCES OF '*' IN SHIPTO-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF '+' IN SHIPTO-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF '\' IN SHIPTO-TELEPHONE  WITH ''.
+    REPLACE ALL OCCURRENCES OF '{' IN SHIPTO-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF '}' IN SHIPTO-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF '[' IN SHIPTO-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF ']' IN SHIPTO-TELEPHONE   WITH ''.
+    CONDENSE SHIPTO-TELEPHONE.
+  ENDIF.
+
+* Removing Special Characters for shipper telephone
+  IF SHIPPER-TELEPHONE IS NOT INITIAL. " If we pass empty parameter sometimes will lead to dump.
+    LV_PHONE = SHIPPER-TELEPHONE.
+    CALL FUNCTION 'SF_SPECIALCHAR_DELETE'
+      EXPORTING
+        WITH_SPECIALCHAR    = LV_PHONE
+      IMPORTING
+        WITHOUT_SPECIALCHAR = LV_PHONE
+      EXCEPTIONS
+        RESULT_WORD_EMPTY   = 1
+        OTHERS              = 2.
+    IF SY-SUBRC <> 0.
+      MESSAGE 'Unable to Remove Special Characters in Telephone' TYPE 'E' DISPLAY LIKE 'I'.
+    ENDIF.
+    SHIPPER-TELEPHONE = LV_PHONE.
+
+* Even after using FM below SPecial characters are not eleminating.
+    REPLACE ALL OCCURRENCES OF '*' IN SHIPPER-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF '+' IN SHIPPER-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF '\' IN SHIPPER-TELEPHONE  WITH ''.
+    REPLACE ALL OCCURRENCES OF '{' IN SHIPPER-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF '}' IN SHIPPER-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF '[' IN SHIPPER-TELEPHONE   WITH ''.
+    REPLACE ALL OCCURRENCES OF ']' IN SHIPPER-TELEPHONE   WITH ''.
+    CONDENSE SHIPPER-TELEPHONE.
+  ENDIF.
+* EOC
+
+  IF SHIPPER-TELEPHONE IS INITIAL.
+    SHIPPER-TELEPHONE = '9999999999'.
+  ENDIF.
+  IF SHIPTO-TELEPHONE IS INITIAL.
+    SHIPTO-TELEPHONE = '9999999999'.
+  ENDIF.
+
+  SHIPMENT-SHIPTO = SHIPTO. " Sometime When address changed in PPS Screen.
+
+  SELECT  * FROM /PWEAVER/SHIPURL INTO TABLE LT_SHIPURL  WHERE SYSTEMID = SY-SYSID
+                                                          AND PWMODULE = COMMUNICATION_URL-PWMODULE.
+  IF SY-SUBRC = 0.
+    READ TABLE LT_SHIPURL INTO COMMUNICATION_URL WITH KEY
+                                                     PLANT = PRODUCT-PLANT
+                                                     CARRIERTYPE = CARRIERCONFIG-LIFNR.
+    IF SY-SUBRC <> 0.
+      READ TABLE LT_SHIPURL INTO COMMUNICATION_URL WITH KEY   PLANT = PRODUCT-PLANT
+                                                      CARRIERTYPE = CARRIERCONFIG-CARRIERIDF.
+      IF SY-SUBRC <> 0.
+        READ TABLE LT_SHIPURL INTO COMMUNICATION_URL WITH KEY  PLANT = PRODUCT-PLANT
+                                                        CARRIERTYPE = CARRIERCONFIG-CARRIERTYPE.
+        IF SY-SUBRC <> 0.
+          READ TABLE LT_SHIPURL INTO COMMUNICATION_URL WITH KEY  CARRIERTYPE = CARRIERCONFIG-LIFNR.
+          IF SY-SUBRC <> 0.
+            READ TABLE LT_SHIPURL INTO COMMUNICATION_URL WITH KEY  CARRIERTYPE = CARRIERCONFIG-CARRIERIDF.
+            IF SY-SUBRC <> 0.
+              READ TABLE LT_SHIPURL INTO COMMUNICATION_URL WITH KEY  CARRIERTYPE = CARRIERCONFIG-CARRIERTYPE.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+  IF COMMUNICATION_URL IS INITIAL.
+    MESSAGE I221(/PWEAVER/ECS_V1) WITH COMMUNICATION_URL-CARRIERTYPE COMMUNICATION_URL-PWMODULE RAISING ERROR.
+    RETURN.
+  ELSEIF COMMUNICATION_URL-COMMUNICATION IS INITIAL.
+    MESSAGE I170(/PWEAVER/ECS_V1) RAISING ERROR.
+    RETURN.
+  ELSEIF COMMUNICATION_URL-COMMUNICATION = 'XCARRIER' AND XCARRIER IS INITIAL.
+    MESSAGE I171(/PWEAVER/ECS_V1) RAISING ERROR.
+  ELSEIF COMMUNICATION_URL-FILENAME IS INITIAL AND COMMUNICATION_URL-COMMUNICATION <> 'API'.
+    MESSAGE I239(/PWEAVER/ECS_V1) RAISING ERROR.
+  ENDIF.
+
+  IF COMMUNICATION_URL-CCCATEGORY = 'T'.
+    CONCATENATE COMMUNICATION_URL-HOSTPORT '://'  COMMUNICATION_URL-TESTURL COMMUNICATION_URL-PATHPREFIX INTO URL.
+  ELSE.
+    CONCATENATE COMMUNICATION_URL-HOSTPORT '://'  COMMUNICATION_URL-PRDURL COMMUNICATION_URL-PATHPREFIX INTO URL.
+  ENDIF.
+
+  V_SHIPDATE = SHIPMENT-SHIPDATE.
+  IF V_SHIPDATE IS INITIAL .
+    V_SHIPDATE  = SY-DATUM .
+  ENDIF  .
+  CLEAR : GS_DATE .
+  CONCATENATE V_SHIPDATE+0(4) V_SHIPDATE+4(2) V_SHIPDATE+6(2) INTO GS_DATE SEPARATED BY '-'.
+
+  IF COMMUNICATION_URL-CARRIERMETHOD = 'REST'.
+    CONCATENATE '<RESTAPI>' 'TRUE' '</RESTAPI>' INTO LS_XML.
+  ELSE.
+    CONCATENATE '<RESTAPI>' 'NO' '</RESTAPI>' INTO LS_XML.
+  ENDIF.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+
+  IF CARRIERCONFIG-CARRIERTYPE = 'DHL'.
+    CONCATENATE '<Carrier>' COMMUNICATION_URL-CARRIERIDF '</Carrier>' INTO LS_XML.
+    APPEND LS_XML TO GT_CARRIER_BLOCK.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<Carrier>' CARRIERCONFIG-CARRIERIDF '</Carrier>' INTO LS_XML.
+    APPEND LS_XML TO GT_CARRIER_BLOCK.
+    CLEAR LS_XML.
+  ENDIF.
+
+  CONCATENATE '<UserID>' CARRIERCONFIG-USERID '</UserID>' INTO LS_XML.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+  CONCATENATE '<Password>' CARRIERCONFIG-PASSWORD '</Password>' INTO LS_XML.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+  CONCATENATE '<CspKey>' CARRIERCONFIG-CSPUSERID '</CspKey>' INTO LS_XML.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+  CONCATENATE '<CspPassword>' CARRIERCONFIG-CSPPASSWORD '</CspPassword>' INTO LS_XML.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+  CONCATENATE '<AccountNumber>' CARRIERCONFIG-ACCOUNTNUMBER '</AccountNumber>' INTO LS_XML.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+  CONCATENATE '<MeterNumber>' CARRIERCONFIG-METNUMBER '</MeterNumber>' INTO LS_XML.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+  APPEND '<CustomerTransactionId/>' TO GT_CARRIER_BLOCK.
+  CONCATENATE '<ShipDate>' GS_DATE '</ShipDate>' INTO LS_XML.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+  CONCATENATE '<ServiceType>' CARRIERCONFIG-SERVICETYPE '</ServiceType>' INTO LS_XML.
+  APPEND LS_XML TO GT_CARRIER_BLOCK.
+  CLEAR LS_XML.
+
+**Rest API Access Token
+  DATA LS_TOKEN TYPE /PWEAVER/TOKENS.
+  CALL FUNCTION '/PWEAVER/GET_ACCESS_TOKEN'
+    EXPORTING
+      CARRIERCONFIG   = CARRIERCONFIG
+      SHIPURL         = COMMUNICATION_URL
+    IMPORTING
+      TOKENS          = LS_TOKEN
+    EXCEPTIONS
+      NO_TOKENS_FOUND = 1
+      OTHERS          = 2.
+  IF SY-SUBRC <> 0.
+* Implement suitable error handling here
+  ENDIF.
+  SHIPMENT-REQ_TOKENS = LS_TOKEN.
+  LS_XML = |<AccessToken>| && LS_TOKEN-ACCESS_TOKEN && |</AccessToken>|. APPEND LS_XML TO GT_CARRIER_BLOCK.
+  LS_XML = |<RefreshToken>| && LS_TOKEN-REFRESH_TOKEN && |</RefreshToken>|. APPEND LS_XML TO GT_CARRIER_BLOCK.
+
+
+*Request URL build
+  DATA : PACKCOUNT TYPE CHAR3 .
+  DATA TOTALWEIGHT(20).
+  DATA : LT_PACKAGES TYPE TABLE OF /PWEAVER/ECSPACKAGES,
+         LS_PACKAGES TYPE /PWEAVER/ECSPACKAGES.
+  DATA: TEMP_DIMENSION(15) TYPE C.
+  DATA: LENGTH(5),WIDTH(5),HEIGHT(5).
+  DATA : LT_COMD TYPE TABLE OF /PWEAVER/COMMODITY,
+         LS_COMD TYPE /PWEAVER/COMMODITY.
+  DATA : LT_HAZARD TYPE TABLE OF /PWEAVER/ECSHAZARD,
+         LS_HAZARD TYPE /PWEAVER/ECSHAZARD,
+         GS_HAZARD TYPE  /PWEAVER/ECSHAZARD.
+  DATA: TEMP_CHAR(10) TYPE C.
+  DATA : LV_DEC TYPE P DECIMALS 0 .
+  DATA : WA_HAZARD LIKE HAZARD .
+  CLEAR : PACKCOUNT ,  TOTALWEIGHT ,LS_PACKAGES , LENGTH,WIDTH,HEIGHT,
+          TEMP_DIMENSION , LS_COMD .
+  REFRESH : LT_PACKAGES , LT_COMD .
+  LT_PACKAGES   = PACKAGES[]. "shipment-packages .
+  LT_COMD      = INT_COMD[]. "shipment-intlcomd .
+  LOOP AT HAZARD INTO LS_HAZARD.
+    APPEND LS_HAZARD TO LT_HAZARD.
+  ENDLOOP.
+*    LT_HAZARD    = HAZARD.
+  DESCRIBE TABLE  LT_PACKAGES LINES PACKCOUNT .
+  LOOP AT LT_PACKAGES INTO LS_PACKAGES.
+    TOTALWEIGHT = TOTALWEIGHT + LS_PACKAGES-WEIGHT.
+  ENDLOOP.
+  CONDENSE TOTALWEIGHT.
+
+  APPEND '<request>' TO LT_XML.
+  APPEND LINES OF GT_CARRIER_BLOCK TO LT_XML.
+
+
+*Begin of PWC Block
+  REFRESH GT_PWC_BLOCK.
+  APPEND '<PWC>' TO GT_PWC_BLOCK.
+  CONCATENATE '<LabelType>' 'PNG' '</LabelType>' INTO LS_XML.
+  APPEND LS_XML TO GT_PWC_BLOCK.
+  CONCATENATE '<URL>' URL '</URL>' INTO LS_XML.
+  APPEND LS_XML TO GT_PWC_BLOCK.
+  IF CARRIERCONFIG-CARRIERTYPE = 'DHL'. " Adding to print label from label printer and it shouldn't reflect FEDEX & UPS
+    CONCATENATE '<PrintCommercialInvoice>' 'TRUE' '</PrintCommercialInvoice>' INTO LS_XML.
+    APPEND LS_XML TO GT_PWC_BLOCK.
+  ENDIF.
+  IF SHIPMENT-CARRIER-PAPERLESSINV IS NOT INITIAL.
+    CONCATENATE '<REMOVEINTERNATIONALFORMS>' 'FALSE' '</REMOVEINTERNATIONALFORMS>' INTO LS_XML.
+    APPEND LS_XML TO GT_PWC_BLOCK.
+
+***BOC ETD 12-07-24, Ashok confirmed as below tags should be in PWC block
+*****Paperless ETD upload to Carrier
+**    DATA: lv_pdf_base64  TYPE string,
+**          lv_doc_content TYPE string.
+**    CONSTANTS: lc_etd_module TYPE /pweaver/shipurl-pwmodule VALUE 'ETD'.
+**
+**    IF shipment-otf_tt[] IS NOT INITIAL OR shipment-pdf_xstring IS NOT INITIAL.
+**      APPEND '<PaperlessOptionDetails>' TO gt_pwc_block.
+**      DATA ls_shipurletd TYPE /pweaver/shipurl.
+**      SELECT SINGLE * FROM /pweaver/shipurl INTO ls_shipurletd WHERE plant = shipment-plant
+**                                                           AND carriertype = carrierconfig-carrieridf
+**                                                              AND pwmodule = lc_etd_module.
+**      IF sy-subrc <> 0.
+**        SELECT SINGLE * FROM /pweaver/shipurl INTO ls_shipurletd WHERE plant = shipment-plant
+**                                                             AND carriertype = carrierconfig-carriertype
+**                                                                AND pwmodule = lc_etd_module.
+**        IF sy-subrc <> 0.
+**          SELECT SINGLE * FROM /pweaver/shipurl INTO ls_shipurletd WHERE carriertype = carrierconfig-carrieridf
+**                                                                        AND pwmodule = lc_etd_module.
+**          IF sy-subrc <> 0.
+**            SELECT SINGLE * FROM /pweaver/shipurl INTO ls_shipurletd WHERE carriertype = carrierconfig-carriertype
+**                                                                          AND pwmodule = lc_etd_module.
+**          ENDIF.
+**        ENDIF.
+**      ENDIF.
+**      CASE ls_shipurletd-cccategory.
+**        WHEN 'T'.
+**          CONCATENATE '<ETDURL>' ls_shipurletd-testurl '</ETDURL>' INTO ls_xml. APPEND ls_xml TO gt_pwc_block.
+**        WHEN 'P'.
+**          CONCATENATE '<ETDURL>' ls_shipurletd-prdurl '</ETDURL>' INTO ls_xml. APPEND ls_xml TO gt_pwc_block.
+**      ENDCASE.
+**
+**      APPEND '<UploadDocument>' TO gt_pwc_block.
+**
+***Get Document Type
+***doc type will be unique value given by carrier, so maintain shipopt table with cconfig-carrieridf and read them here
+***below is the doc types given by UPS REST API, need to follow the same data maintainance for other carriers.
+***CARRIERTYPE  SHIPOPTION              SHIPOPTIONVALUE   SPL_SERVICE_CODE  SAPOPTIONVALUE  DESCRIPTION
+***1710         HAZUPSOPEN_ETD_DOCTYPE    AF                001             PDF           Authorization FORM
+***1710         HAZUPSOPEN_ETD_DOCTYPE    CI                002             PDF           Commercial Invoice
+***1710         HAZUPSOPEN_ETD_DOCTYPE    CO                003             PDF           Certificate OF Origin
+***1710         HAZUPSOPEN_ETD_DOCTYPE    DEC               013             PDF           Declaration
+***1710         HAZUPSOPEN_ETD_DOCTYPE    EAD               004             PDF           EXPORT Accompanying Document
+***1710         HAZUPSOPEN_ETD_DOCTYPE    EL                005             PDF           EXPORT License
+***1710         HAZUPSOPEN_ETD_DOCTYPE    IP                006             PDF           IMPORT Permit
+***1710         HAZUPSOPEN_ETD_DOCTYPE    NAFTA             007             PDF           One TIME NAFTA
+***1710         HAZUPSOPEN_ETD_DOCTYPE    OD                008             PDF           Other Document
+***1710         HAZUPSOPEN_ETD_DOCTYPE    PA                009             PDF           Power OF Attorney
+***1710         HAZUPSOPEN_ETD_DOCTYPE    PL                010             PDF           Packing List
+***1710         HAZUPSOPEN_ETD_DOCTYPE    SED               011             PDF           SED Document
+***1710         HAZUPSOPEN_ETD_DOCTYPE    SLI               012             PDF           Shipper's Letter of Instruction
+**
+**      DATA: lv_option     TYPE /pweaver/shipopt-shipoption,
+**            ls_shipoptetd TYPE /pweaver/shipopt.
+**
+**      CONCATENATE carrierconfig-carrieridf '_ETD_DOCTYPE' INTO lv_option.
+**
+**      SELECT SINGLE * FROM /pweaver/shipopt INTO ls_shipoptetd WHERE carriertype = shipment-plant
+**                                                                  AND shipoption = lv_option
+**                                                             AND shipoptionvalue = 'CI'. "CI refers to Commercial Invoice, if customer uses different forms mean read the table with the proper value
+**      IF sy-subrc <> 0.
+**        SELECT SINGLE * FROM /pweaver/shipopt INTO ls_shipoptetd WHERE shipoption = lv_option
+**                                                              AND shipoptionvalue = 'CI'.
+**      ENDIF.
+**
+**
+**      CONCATENATE '<DocumentType>' ls_shipoptetd-spl_service_code '</DocumentType>' INTO ls_xml. APPEND ls_xml TO gt_pwc_block.
+**
+**      ls_xml = |<DocumentReference>| && shipment-vbeln && |</DocumentReference>|. APPEND ls_xml TO gt_pwc_block.
+**      ls_xml = |<FileName>| && ls_shipoptetd-shipoptionvalue && shipment-vbeln && sy-datum && |.| && ls_shipoptetd-sapoptionvalue && |</FileName>|. APPEND ls_xml TO gt_pwc_block.
+**
+**      IF ls_shipoptetd-sapoptionvalue = 'PDF' OR
+**         ls_shipoptetd-sapoptionvalue = 'pdf'.
+**        CALL FUNCTION '/PWEAVER/OTF_TO_PDF_BASE64'
+**          EXPORTING
+**            otf_tt            = shipment-otf_tt
+**            pdf_xstring       = shipment-pdf_xstring
+**          IMPORTING
+**            pdf_base64_string = lv_pdf_base64.
+**        lv_doc_content = lv_pdf_base64.
+**      ELSE.
+**        lv_doc_content = ''."Map other format content here
+**      ENDIF.
+**
+**
+**      ls_xml = |<DocumentContent>| && lv_doc_content && |</DocumentContent>|. APPEND ls_xml TO gt_pwc_block.
+**      CONCATENATE '<DocumentFormat>' ls_shipoptetd-sapoptionvalue '</DocumentFormat>' INTO ls_xml. APPEND ls_xml TO gt_pwc_block.
+**      APPEND '<LineNumber>1</LineNumber>' TO gt_pwc_block."document count
+**      APPEND '</UploadDocument>' TO gt_pwc_block.
+**      APPEND '</PaperlessOptionDetails>' TO gt_pwc_block.
+**    ENDIF.
+*****Paperless ETD upload to Carrier
+***BOC ETD 12-07-24
+
+
+  ELSE.
+    CONCATENATE '<REMOVEINTERNATIONALFORMS>' 'TRUE' '</REMOVEINTERNATIONALFORMS>' INTO LS_XML.
+    APPEND LS_XML TO GT_PWC_BLOCK.
+  ENDIF.
+  APPEND '<PrinterID> </PrinterID>' TO GT_PWC_BLOCK.
+  APPEND '</PWC>' TO GT_PWC_BLOCK.
+  PERFORM ZGSHIP_P IN PROGRAM ZPWECSEXITS USING SHIPMENT
+                                                CARRIERCONFIG
+                                                PRODUCT
+                                                COMMUNICATION_URL
+                                       CHANGING GT_PWC_BLOCK IF FOUND.
+
+*End of PWC Block
+  APPEND LINES OF GT_PWC_BLOCK TO LT_XML.
+
+
+  APPEND '<Sender>' TO LT_XML.
+  CONCATENATE '<CompanyName>' SHIPPER-COMPANY '</CompanyName>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  IF SHIPPER-CONTACT IS NOT INITIAL.
+    CONCATENATE '<Contact>' SHIPPER-CONTACT '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<Contact>' SHIPPER-COMPANY '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+  CONCATENATE '<StreetLine1>' SHIPPER-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<StreetLine2>' SHIPPER-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML .
+  CONCATENATE '<StreetLine3>' SHIPPER-ADDRESS3 '</StreetLine3>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML .
+
+  CONCATENATE '<City>' SHIPPER-CITY '</City>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<StateOrProvinceCode>' SHIPPER-STATE '</StateOrProvinceCode>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<PostalCode>' SHIPPER-POSTALCODE '</PostalCode>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<CountryCode>' SHIPPER-COUNTRY '</CountryCode>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<Phone>' SHIPPER-TELEPHONE '</Phone>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<Email>' SHIPPER-EMAIL '</Email>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<TAXID>' '' '</TAXID>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  APPEND '</Sender>' TO LT_XML.
+
+
+
+  IF CARRIERCONFIG-CARRIERTYPE NE 'DHL'.
+    APPEND '<Origin>' TO LT_XML.
+    CONCATENATE '<CompanyName>' SHIPPER-COMPANY '</CompanyName>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF SHIPPER-CONTACT IS NOT INITIAL.                                         " We are getting error in the response if contact tag is empty.
+      CONCATENATE '<Contact>' SHIPPER-CONTACT '</Contact>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ELSE.
+      CONCATENATE '<Contact>' SHIPPER-COMPANY '</Contact>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ENDIF.
+    CONCATENATE '<StreetLine1>' SHIPPER-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine2>' SHIPPER-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<StreetLine3>' SHIPPER-ADDRESS3 '</StreetLine3>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<City>' SHIPPER-CITY '</City>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StateOrProvinceCode>' SHIPPER-STATE '</StateOrProvinceCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PostalCode>' SHIPPER-POSTALCODE '</PostalCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CountryCode>' SHIPPER-COUNTRY '</CountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Phone>' SHIPPER-TELEPHONE '</Phone>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Email>' SHIPPER-EMAIL '</Email>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<TAXID>' '' '</TAXID>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</Origin>' TO LT_XML.
+  ENDIF.
+
+  APPEND '<Recipient>' TO LT_XML.
+  CONCATENATE '<CompanyName>' SHIPMENT-SHIPTO-COMPANY  '</CompanyName>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  IF SHIPMENT-SHIPTO-CONTACT IS NOT INITIAL.
+    CONCATENATE '<Contact>' SHIPMENT-SHIPTO-CONTACT '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<Contact>' SHIPMENT-SHIPTO-COMPANY '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+
+  CONCATENATE '<StreetLine1>' SHIPMENT-SHIPTO-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+
+  CONCATENATE '<StreetLine2>' SHIPMENT-SHIPTO-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+
+  CONCATENATE '<StreetLine3>' SHIPMENT-SHIPTO-ADDRESS3 '</StreetLine3>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+
+  CONCATENATE '<City>' SHIPMENT-SHIPTO-CITY '</City>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<StateOrProvinceCode>' SHIPMENT-SHIPTO-STATE '</StateOrProvinceCode>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<PostalCode>' SHIPMENT-SHIPTO-POSTALCODE '</PostalCode>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<CountryCode>' SHIPMENT-SHIPTO-COUNTRY '</CountryCode>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<Phone>' SHIPMENT-SHIPTO-TELEPHONE '</Phone>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<Email>' SHIPMENT-SHIPTO-EMAIL '</Email>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<TAXID>' '' '</TAXID>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  APPEND '</Recipient>' TO LT_XML.
+
+
+  IF CARRIERCONFIG-CARRIERTYPE NE 'DHL'.
+    APPEND '<SoldTo>' TO LT_XML.
+    CONCATENATE '<CompanyName>' SHIPMENT-SOLDTO-COMPANY '</CompanyName>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF SHIPMENT-SOLDTO-CONTACT IS NOT INITIAL.
+      CONCATENATE '<Contact>' SHIPMENT-SOLDTO-CONTACT '</Contact>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ELSE.
+      CONCATENATE '<Contact>' SHIPMENT-SOLDTO-COMPANY '</Contact>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ENDIF.
+    CONCATENATE '<StreetLine1>' SHIPMENT-SOLDTO-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine2>' SHIPMENT-SOLDTO-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<StreetLine3>' SHIPMENT-SOLDTO-ADDRESS3 '</StreetLine3>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<City>' SHIPMENT-SOLDTO-CITY  '</City>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StateOrProvinceCode>' SHIPMENT-SOLDTO-STATE '</StateOrProvinceCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PostalCode>'  SHIPMENT-SOLDTO-POSTALCODE '</PostalCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CountryCode>' SHIPMENT-SOLDTO-COUNTRY '</CountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF SHIPMENT-SOLDTO-TELEPHONE IS INITIAL.
+      SHIPMENT-SOLDTO-TELEPHONE = '9999999999'.
+    ELSE.
+      LV_PHONE = SHIPMENT-SOLDTO-TELEPHONE.
+      CALL FUNCTION 'SF_SPECIALCHAR_DELETE'
+        EXPORTING
+          WITH_SPECIALCHAR    = LV_PHONE
+        IMPORTING
+          WITHOUT_SPECIALCHAR = LV_PHONE
+        EXCEPTIONS
+          RESULT_WORD_EMPTY   = 1
+          OTHERS              = 2.
+      IF SY-SUBRC <> 0.
+        MESSAGE 'Unable to Remove Special Characters in Telephone' TYPE 'E' DISPLAY LIKE 'I'.
+      ENDIF.
+      SHIPMENT-SOLDTO-TELEPHONE = LV_PHONE.
+
+* Even after using FM below SPecial characters are not eleminating.
+      REPLACE ALL OCCURRENCES OF '*' IN SHIPMENT-SOLDTO-TELEPHONE  WITH ''.
+      REPLACE ALL OCCURRENCES OF '+' IN SHIPMENT-SOLDTO-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '\' IN SHIPMENT-SOLDTO-TELEPHONE  WITH ''.
+      REPLACE ALL OCCURRENCES OF '{' IN SHIPMENT-SOLDTO-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '}' IN SHIPMENT-SOLDTO-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '[' IN SHIPMENT-SOLDTO-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF ']' IN SHIPMENT-SOLDTO-TELEPHONE   WITH ''.
+      CONDENSE SHIPMENT-SOLDTO-TELEPHONE.
+    ENDIF.
+    CONCATENATE '<Phone>' SHIPMENT-SOLDTO-TELEPHONE '</Phone>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Email>' SHIPMENT-SOLDTO-EMAIL '</Email>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<TAXID>' '' '</TAXID>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</SoldTo>' TO LT_XML.
+  ENDIF.
+
+
+
+* Begin of Broker Block
+  IF SHIPMENT-CARRIER-BSOFLAG = ABAP_TRUE.
+    LS_BROKER = SHIPMENT-CARRIER-BROKERADDRESS.
+    APPEND '<Broker>' TO LT_XML.
+    CONCATENATE '<CompanyName>' LS_BROKER-COMPANY '</CompanyName>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Contact>' LS_BROKER-CONTACT '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine1>' LS_BROKER-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine2>' LS_BROKER-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<StreetLine3>' LS_BROKER-ADDRESS3 '</StreetLine3>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<City>' LS_BROKER-CITY  '</City>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StateOrProvinceCode>' LS_BROKER-STATE '</StateOrProvinceCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PostalCode>'  LS_BROKER-POSTALCODE '</PostalCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CountryCode>' LS_BROKER-COUNTRY '</CountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF LS_BROKER-TELEPHONE IS NOT INITIAL.
+      LV_PHONE = LS_BROKER-TELEPHONE.
+      CALL FUNCTION 'SF_SPECIALCHAR_DELETE'
+        EXPORTING
+          WITH_SPECIALCHAR    = LV_PHONE
+        IMPORTING
+          WITHOUT_SPECIALCHAR = LV_PHONE
+        EXCEPTIONS
+          RESULT_WORD_EMPTY   = 1
+          OTHERS              = 2.
+      IF SY-SUBRC <> 0.
+        MESSAGE 'Unable to Remove Special Characters in Telephone' TYPE 'E' DISPLAY LIKE 'I'.
+      ENDIF.
+      LS_BROKER-TELEPHONE = LV_PHONE.
+
+* Even after using FM below SPecial characters are not eleminating.
+      REPLACE ALL OCCURRENCES OF '*' IN LS_BROKER-TELEPHONE  WITH ''.
+      REPLACE ALL OCCURRENCES OF '+' IN LS_BROKER-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '\' IN LS_BROKER-TELEPHONE  WITH ''.
+      REPLACE ALL OCCURRENCES OF '{' IN LS_BROKER-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '}' IN LS_BROKER-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '[' IN LS_BROKER-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF ']' IN LS_BROKER-TELEPHONE   WITH ''.
+      CONDENSE LS_BROKER-TELEPHONE.
+    ENDIF.
+    CONCATENATE '<Phone>' LS_BROKER-TELEPHONE '</Phone>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Email>' LS_BROKER-EMAIL '</Email>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</Broker>' TO LT_XML.
+  ENDIF.
+* End of Broker Block
+
+* Begin of Hold Block
+  IF SHIPMENT-CARRIER-HOLD = ABAP_TRUE.
+    LS_HOLD = SHIPMENT-CARRIER-HOLDLOCATION.
+    APPEND '<Hold>' TO LT_XML.
+    CONCATENATE '<CompanyName>' LS_HOLD-COMPANY '</CompanyName>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Contact>' LS_HOLD-CONTACT '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine1>' LS_HOLD-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine2>' LS_HOLD-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<StreetLine3>' LS_HOLD-ADDRESS3 '</StreetLine3>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<City>' LS_HOLD-CITY  '</City>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StateOrProvinceCode>' LS_HOLD-STATE '</StateOrProvinceCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PostalCode>'  LS_HOLD-POSTALCODE '</PostalCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CountryCode>' LS_HOLD-COUNTRY '</CountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF LS_HOLD-TELEPHONE IS NOT INITIAL.
+      LV_PHONE = LS_HOLD-TELEPHONE.
+      CALL FUNCTION 'SF_SPECIALCHAR_DELETE'
+        EXPORTING
+          WITH_SPECIALCHAR    = LV_PHONE
+        IMPORTING
+          WITHOUT_SPECIALCHAR = LV_PHONE
+        EXCEPTIONS
+          RESULT_WORD_EMPTY   = 1
+          OTHERS              = 2.
+      IF SY-SUBRC <> 0.
+        MESSAGE 'Unable to Remove Special Characters in Telephone' TYPE 'E' DISPLAY LIKE 'I'.
+      ENDIF.
+      LS_HOLD-TELEPHONE = LV_PHONE.
+
+* Even after using FM below SPecial characters are not eleminating.
+      REPLACE ALL OCCURRENCES OF '*' IN LS_HOLD-TELEPHONE  WITH ''.
+      REPLACE ALL OCCURRENCES OF '+' IN LS_HOLD-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '\' IN LS_HOLD-TELEPHONE  WITH ''.
+      REPLACE ALL OCCURRENCES OF '{' IN LS_HOLD-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '}' IN LS_HOLD-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '[' IN LS_HOLD-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF ']' IN LS_HOLD-TELEPHONE   WITH ''.
+      CONDENSE LS_HOLD-TELEPHONE.
+    ENDIF.
+    CONCATENATE '<Phone>' LS_HOLD-TELEPHONE '</Phone>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Email>' LS_HOLD-EMAIL '</Email>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<TAXID>' '' '</TAXID>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</Hold>' TO LT_XML.
+  ENDIF.
+* End of Hold Block
+
+
+  IF SHIPMENT-CARRIER-PAYMENTCODE = 'SENDER' OR SHIPMENT-CARRIER-PAYMENTCODE = 'PREPAID'.
+    SHIPMENT-CARRIER-PAYMENTCODE = 'SENDER'.
+    APPEND '<Paymentinformation>' TO LT_XML.
+    CONCATENATE '<PaymentType>' SHIPMENT-CARRIER-PAYMENTCODE '</PaymentType>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerAccountNumber>' CARRIERCONFIG-ACCOUNTNUMBER '</PayerAccountNumber>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerCountryCode>' SHIPPER-COUNTRY  '</PayerCountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerAccountZipCode>' SHIPPER-POSTALCODE '</PayerAccountZipCode>'  INTO LS_XML .
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CompanyName>' SHIPPER-COMPANY '</CompanyName>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Contact>' SHIPPER-CONTACT '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine1>' SHIPPER-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine2>' SHIPPER-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine3>' SHIPPER-ADDRESS3 '</StreetLine3>'  INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<City>'  SHIPPER-CITY '</City>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StateOrProvinceCode>' SHIPPER-STATE '</StateOrProvinceCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PostalCode>' SHIPPER-POSTALCODE '</PostalCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CountryCode>' SHIPPER-COUNTRY '</CountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Phone>' SHIPPER-TELEPHONE '</Phone>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Email>' SHIPPER-EMAIL  '</Email>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</Paymentinformation>' TO LT_XML.
+
+  ELSEIF SHIPMENT-CARRIER-PAYMENTCODE = 'RECIPIENT'.
+    APPEND '<Paymentinformation>' TO LT_XML.
+    CONCATENATE '<PaymentType>' SHIPMENT-CARRIER-PAYMENTCODE '</PaymentType>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerAccountNumber>' SHIPMENT-CARRIER-THIRDPARTYACCT '</PayerAccountNumber>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerCountryCode>' SHIPTO-COUNTRY  '</PayerCountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerAccountZipCode>' SHIPTO-POSTALCODE '</PayerAccountZipCode>'  INTO LS_XML .
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CompanyName>' SHIPTO-COMPANY '</CompanyName>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Contact>' SHIPTO-CONTACT '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine1>' SHIPTO-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine2>' SHIPTO-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine3>' SHIPTO-ADDRESS3 '</StreetLine3>'  INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<City>'  SHIPTO-CITY '</City>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StateOrProvinceCode>' SHIPTO-STATE '</StateOrProvinceCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PostalCode>' SHIPTO-POSTALCODE '</PostalCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CountryCode>' SHIPTO-COUNTRY '</CountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Phone>' SHIPTO-TELEPHONE '</Phone>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Email>' SHIPTO-EMAIL  '</Email>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</Paymentinformation>' TO LT_XML.
+
+  ELSEIF SHIPMENT-CARRIER-PAYMENTCODE = 'THIRDPARTY'.
+    APPEND '<Paymentinformation>' TO LT_XML.
+    IF CARRIERCONFIG-CARRIERTYPE = 'FEDEX'.
+      CONCATENATE '<PaymentType>' 'THIRD_PARTY' '</PaymentType>' INTO LS_XML.
+    ELSE.
+      CONCATENATE '<PaymentType>' SHIPMENT-CARRIER-PAYMENTCODE '</PaymentType>' INTO LS_XML.
+    ENDIF.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerAccountNumber>' SHIPMENT-CARRIER-THIRDPARTYACCT '</PayerAccountNumber>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerCountryCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-COUNTRY  '</PayerCountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerAccountZipCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-POSTALCODE '</PayerAccountZipCode>'  INTO LS_XML .
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CompanyName>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-COMPANY '</CompanyName>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Contact>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-CONTACT '</Contact>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine1>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-ADDRESS1 '</StreetLine1>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine2>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-ADDRESS2 '</StreetLine2>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StreetLine3>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-ADDRESS3 '</StreetLine3>'  INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<City>'  SHIPMENT-CARRIER-THIRDPARTYADDRESS-CITY '</City>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<StateOrProvinceCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-STATE '</StateOrProvinceCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PostalCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-POSTALCODE '</PostalCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CountryCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-COUNTRY '</CountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE IS NOT INITIAL.
+      LV_PHONE = SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE.
+      CALL FUNCTION 'SF_SPECIALCHAR_DELETE'
+        EXPORTING
+          WITH_SPECIALCHAR    = LV_PHONE
+        IMPORTING
+          WITHOUT_SPECIALCHAR = LV_PHONE
+        EXCEPTIONS
+          RESULT_WORD_EMPTY   = 1
+          OTHERS              = 2.
+      IF SY-SUBRC <> 0.
+        MESSAGE 'Unable to Remove Special Characters in Telephone' TYPE 'E' DISPLAY LIKE 'I'.
+      ENDIF.
+      SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE = LV_PHONE.
+
+* Even after using FM below SPecial characters are not eleminating.
+      REPLACE ALL OCCURRENCES OF '*' IN SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE  WITH ''.
+      REPLACE ALL OCCURRENCES OF '+' IN SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '\' IN SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE  WITH ''.
+      REPLACE ALL OCCURRENCES OF '{' IN SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '}' IN SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF '[' IN SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE   WITH ''.
+      REPLACE ALL OCCURRENCES OF ']' IN SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE   WITH ''.
+      CONDENSE SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE.
+    ENDIF.
+    CONCATENATE '<Phone>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-TELEPHONE '</Phone>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<Email>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-EMAIL  '</Email>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</Paymentinformation>' TO LT_XML.
+  ELSE.
+    APPEND '<Paymentinformation>' TO LT_XML.
+    IF CARRIERCONFIG-CARRIERTYPE = 'UPS' AND SHIPMENT-CARRIER-PAYMENTCODE = 'CONSIGNEE'.
+      CONCATENATE '<PaymentType>' 'CONSIGNEEBILLINDICATOR' '</PaymentType>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ELSE.
+      CONCATENATE '<PaymentType>' SHIPMENT-CARRIER-PAYMENTCODE '</PaymentType>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ENDIF.
+    CONCATENATE '<PayerAccountNumber>' SHIPMENT-CARRIER-THIRDPARTYACCT '</PayerAccountNumber>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerCountryCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-COUNTRY  '</PayerCountryCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PayerAccountZipCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-POSTALCODE '</PayerAccountZipCode>'  INTO LS_XML .
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</Paymentinformation>' TO LT_XML.
+  ENDIF.
+
+*  APPEND '<FreightShipmentDetail>' TO lt_xml.
+*  CONCATENATE '<FreightAccountNumber>'  '</FreightAccountNumber>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<CompanyName>'  '</CompanyName>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<Contact>'  '</Contact>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<StreetLine1>'  '</StreetLine1>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  APPEND '<StreetLine2/>' TO lt_xml.
+*  APPEND '<StreetLine3/>' TO lt_xml.
+*  CONCATENATE '<City>' '</City>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<StateOrProvinceCode>' '</StateOrProvinceCode>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<PostalCode>' '</PostalCode>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<CountryCode>' '</CountryCode>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<Phone>' '</Phone>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  APPEND '<Email/>' TO lt_xml.
+*  APPEND '</FreightShipmentDetail>' TO lt_xml.
+
+  CONCATENATE '<PackageCount>' PACKCOUNT '</PackageCount>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  CONCATENATE '<TotalWeight>' TOTALWEIGHT '</TotalWeight>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+
+  LOOP AT LT_PACKAGES INTO LS_PACKAGES  .
+    SPLIT LS_PACKAGES-DIMENSIONS AT 'X' INTO LENGTH TEMP_DIMENSION.
+    SPLIT TEMP_DIMENSION AT 'X' INTO WIDTH HEIGHT.
+
+    APPEND '<Packagedetails>' TO LT_XML.
+    IF SHIPMENT-CARRIER-PACKAGETYPE IS NOT INITIAL.
+      CONCATENATE '<PackagingType>' SHIPMENT-CARRIER-PACKAGETYPE '</PackagingType>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ELSE.
+      CONCATENATE '<PackagingType>' 'YOUR_PACKAGING' '</PackagingType>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ENDIF.
+    CONCATENATE '<WeightValue>' LS_PACKAGES-WEIGHT '</WeightValue>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<WeightUnits>' CARRIERCONFIG-WEIGHTUNIT '</WeightUnits>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF LENGTH IS INITIAL AND WIDTH IS INITIAL AND HEIGHT IS INITIAL .
+      CONCATENATE '<Length>' '1' '</Length>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<Width>' '1' '</Width>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<Height>' '1' '</Height>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ENDIF .
+    IF LENGTH IS NOT INITIAL AND WIDTH IS NOT INITIAL AND HEIGHT IS NOT INITIAL .
+      CONCATENATE '<Length>' LENGTH  '</Length>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<Width>' WIDTH '</Width>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<Height>' HEIGHT '</Height>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ENDIF .
+    CONCATENATE '<DimensionUnit>' CARRIERCONFIG-DIMENSIONUNIT '</DimensionUnit>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+*    IF ls_packages-cod_amount <> 0.
+*      CONCATENATE '<CODAmount>' ls_packages-cod_amount '</CODAmount>' INTO ls_xml.
+*      APPEND ls_xml TO lt_xml.
+*      CLEAR ls_xml.
+*      CONCATENATE '<CODCurrencyCode>' shipment-currencyunit '</CODCurrencyCode>' INTO ls_xml.
+*      APPEND ls_xml TO lt_xml.
+*      CLEAR ls_xml.
+*    ELSE.
+*      CONCATENATE '<CODAmount>'  '</CODAmount>' INTO ls_xml.
+*      APPEND ls_xml TO lt_xml.
+*      CLEAR ls_xml.
+*      CONCATENATE '<CODCurrencyCode>'  '</CODCurrencyCode>' INTO ls_xml.
+*      APPEND ls_xml TO lt_xml.
+*      CLEAR ls_xml.
+*    ENDIF .
+    IF LS_PACKAGES-INSURANCE_AMT <> 0  .
+      CONCATENATE '<InsuranceAmount>' LS_PACKAGES-INSURANCE_AMT '</InsuranceAmount>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<InsuranceCurrencyCode>' SHIPMENT-CURRENCYUNIT '</InsuranceCurrencyCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ELSE .
+      APPEND '<InsuranceAmount/>' TO LT_XML.
+      APPEND '<InsuranceCurrencyCode/>' TO LT_XML.
+    ENDIF.
+    CONCATENATE '<CUSTOMERREFERENCE>' SHIPMENT-REFERENCE1 '</CUSTOMERREFERENCE>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<INVOICENUMBER>'  SHIPMENT-REFERENCE2 '</INVOICENUMBER>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '<PONUMBER/>' TO LT_XML.
+
+    IF SHIPMENT-CARRIER-COLLECTIONTYPE IS NOT INITIAL AND ( SHIPTO-COUNTRY = SHIPPER-COUNTRY ) AND LS_PACKAGES-COD_AMOUNT IS NOT INITIAL.
+
+      CONCATENATE '<CODAmount>' LS_PACKAGES-COD_AMOUNT '</CODAmount>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+
+      CONCATENATE '<CodCollectionType>' SHIPMENT-CARRIER-COLLECTIONTYPE '</CodCollectionType>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+
+      CONCATENATE '<CODCurrencyCode>' CARRIERCONFIG-CURRENCYUNIT '</CODCurrencyCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+
+    ENDIF.
+
+    IF LT_HAZARD IS NOT INITIAL.
+      READ TABLE LT_HAZARD INTO LS_HAZARD WITH KEY EXIDV = LS_PACKAGES-HANDLING_UNIT.
+      APPEND '<TemplateName/>' TO LT_XML.
+      APPEND '<DangerousGoodsDetail>' TO LT_XML.
+      IF LS_HAZARD-ACCESSIBILITY IS INITIAL.
+        LS_HAZARD-ACCESSIBILITY = 'INACCESSIBLE'.
+      ENDIF.
+      IF CARRIERCONFIG-SERVICETYPE <> 'FEDEX_GROUND'.
+        CONCATENATE '<Accessibility>'  LS_HAZARD-ACCESSIBILITY  '</Accessibility>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        IF LS_HAZARD-CARGOAIRCRAFT = 'X'.
+          CONCATENATE '<CargoAircraftOnly>' 'true' '</CargoAircraftOnly>' INTO LS_XML.
+          APPEND LS_XML TO LT_XML.
+          CLEAR LS_XML.
+        ELSE.
+          CONCATENATE '<CargoAircraftOnly>' 'false' '</CargoAircraftOnly>' INTO LS_XML.
+          APPEND LS_XML TO LT_XML.
+          CLEAR LS_XML.
+        ENDIF.
+      ENDIF.
+      CONCATENATE '<Options>' LS_HAZARD-DGOPTION '</Options>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      APPEND '<Containers>' TO LT_XML.
+      IF CARRIERCONFIG-SERVICETYPE <> 'FEDEX_GROUND'.
+        CONCATENATE '<ContainerType>'  LS_HAZARD-PACKAGINGTYPE '</ContainerType>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        CONCATENATE '<NumberOfContainers>' LS_HAZARD-PACKAGECOUNT '</NumberOfContainers>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+      ENDIF .
+      LOOP AT LT_HAZARD INTO GS_HAZARD WHERE EXIDV = LS_PACKAGES-HANDLING_UNIT.
+        APPEND '<HazardousCommodities>' TO LT_XML.
+        APPEND '<Description>' TO LT_XML.
+        IF CARRIERCONFIG-SERVICETYPE = 'FEDEX_GROUND'.
+          CONCATENATE '<Id>' GS_HAZARD-IDNUMBER  '</Id>' INTO LS_XML.
+          APPEND LS_XML TO LT_XML.
+          CLEAR LS_XML.
+        ELSE .
+          CONCATENATE '<Id>' GS_HAZARD-IDNUMBER+2(4) '</Id>' INTO LS_XML.
+          APPEND LS_XML TO LT_XML.
+          CLEAR LS_XML.
+        ENDIF.
+        CONCATENATE '<PackingGroup>'  GS_HAZARD-PACKINGGROUP '</PackingGroup>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        APPEND '<PackingDetails>' TO LT_XML.
+        CONCATENATE '<PackingInstructions>' GS_HAZARD-PACKINSTRUCTIONS '</PackingInstructions>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        APPEND '</PackingDetails>' TO LT_XML.
+        CONCATENATE '<ProperShippingName>' GS_HAZARD-PROPERSHIPNAME '</ProperShippingName>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        CONCATENATE '<TechnicalName>' GS_HAZARD-TECHNICALNAME '</TechnicalName>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        CONCATENATE '<HazardClass>' GS_HAZARD-CLASSORDIVISION '</HazardClass>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        CONCATENATE '<LabelText>' GS_HAZARD-TYPEDOTLABELS '</LabelText>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        APPEND '</Description>' TO LT_XML.
+        APPEND '<Quantity>' TO LT_XML.
+        CONCATENATE '<Amount>' GS_HAZARD-QUANTITY '</Amount>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        CONCATENATE '<Units>' GS_HAZARD-UNITS '</Units>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        APPEND '</Quantity>' TO LT_XML.
+        APPEND '</HazardousCommodities>' TO LT_XML.
+      ENDLOOP .
+      APPEND '</Containers>' TO LT_XML.
+      IF CARRIERCONFIG-SERVICETYPE = 'FEDEX_GROUND'.
+        APPEND '<Packaging>' TO LT_XML.
+        CONCATENATE '<Count>' LS_HAZARD-PACKAGECOUNT '</Count>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        CONCATENATE '<Units>' LS_HAZARD-PACKAGECOUNT '</Units>' INTO LS_XML.
+        APPEND LS_XML TO LT_XML.
+        CLEAR LS_XML.
+        APPEND '</Packaging>' TO LT_XML.
+      ENDIF.
+
+      DATA  : FULL_USER_NAME TYPE ADDR3_VAL-NAME_TEXT,
+              LV_DGINFONAME  TYPE CHAR35,
+              LV_DGINFOPLACE TYPE CHAR50,
+              LV_DGINFOTITLE TYPE CHAR50.
+
+      IF SHIPMENT-DGINFO-NAME IS INITIAL.
+        CALL FUNCTION 'USER_NAME_GET'
+          IMPORTING
+            FULL_USER_NAME = FULL_USER_NAME.
+
+        LV_DGINFONAME = FULL_USER_NAME.
+        CONCATENATE SHIPPER-CITY ',' SHIPPER-STATE INTO LV_DGINFOPLACE SEPARATED BY SPACE.
+        LV_DGINFOTITLE = 'SHIPPER'.
+      ELSE.
+        LV_DGINFONAME = SHIPMENT-DGINFO-NAME.
+      ENDIF.
+
+      APPEND '<Signatory>' TO LT_XML.
+      CONCATENATE '<ContactName>' LV_DGINFONAME '</ContactName>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<Title>' LV_DGINFOTITLE '</Title>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<Place>' LV_DGINFOPLACE '</Place>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      APPEND '</Signatory>' TO LT_XML.
+      CONCATENATE '<EmergencyContactNumber>' LS_HAZARD-EMERGENCYPHONE '</EmergencyContactNumber>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<Offeror>' LS_HAZARD-EMERGENCYCONTACT '</Offeror>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      APPEND '</DangerousGoodsDetail>' TO LT_XML.
+    ENDIF.
+
+
+    APPEND '</Packagedetails>' TO LT_XML.
+    CLEAR : LS_PACKAGES .
+  ENDLOOP .
+
+  APPEND '<Referencedetails>' TO LT_XML.
+  CONCATENATE '<CustomerReferenceNumber>' SHIPMENT-REFERENCE1 '</CustomerReferenceNumber>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+*  CONCATENATE '<InvoiceNumber>'  shipment-reference2 '</InvoiceNumber>' INTO ls_xml.
+  CONCATENATE '<INVOICENUMBER>'  SHIPMENT-REFERENCE2 '</INVOICENUMBER>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  APPEND '<PoNumber/>' TO LT_XML.
+  APPEND '</Referencedetails>' TO LT_XML.
+
+
+*  APPEND '<PickupInformation>' TO lt_xml.
+*  CONCATENATE '<PickupDate>' '</PickupDate>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<EarliestTimeReady>'  '</EarliestTimeReady>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<LatestTimeReady>'  '</LatestTimeReady>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<ContactName>'  '</ContactName>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<ContactCompany>' '</ContactCompany>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  CONCATENATE '<ContactPhone>'  '</ContactPhone>' INTO ls_xml.
+*  APPEND ls_xml TO lt_xml.
+*  CLEAR ls_xml.
+*  APPEND '</PickupInformation>' TO lt_xml.
+
+
+
+  APPEND '<SpecialServices>' TO LT_XML.
+  IF SHIPMENT-SHIPMENTTYPE = 'R'.
+    "In this case, for return same ship method is used as return service, only send the return label print option
+    "For returns, from and to address sent in the ship req are swapped in SIG,
+    CONCATENATE '<ReturnServiceCode>' SHIPMENT-CARRIER-RETURNTYPE '</ReturnServiceCode>' INTO LS_XML. "CARRIER-returncarrier
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<ReturnLabel>' 'true'  '</ReturnLabel>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<ReturnLabel>' 'false' '</ReturnLabel>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<ReturnServiceCode>' '</ReturnServiceCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+
+  IF SHIPMENT-CARRIER-SATURDAYDEL IS   NOT INITIAL .
+    CONCATENATE '<SaturdayDelivery>' 'true'  '</SaturdayDelivery>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<SaturdayDelivery>'  '</SaturdayDelivery>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF .
+
+  IF SHIPMENT-CARRIER-SATPICKUP IS   NOT INITIAL .
+    CONCATENATE '<SaturdayPickup>' 'true' '</SaturdayPickup>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<SaturdayPickup>' 'false' '</SaturdayPickup>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+  IF SHIPMENT-CARRIER-INSIDEPICKUP IS   NOT INITIAL .
+    CONCATENATE '<InsidePickup>' 'true' '</InsidePickup>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<InsidePickup>' 'false'  '</InsidePickup>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+  IF SHIPMENT-CARRIER-INSIDEDEL IS   NOT INITIAL .
+    CONCATENATE '<InsideDelivery>' 'true'  '</InsideDelivery>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<InsideDelivery>' 'false' '</InsideDelivery>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+  IF SHIPMENT-CARRIER-SIGNATURE IS NOT INITIAL.
+    CONCATENATE '<SignatureRequired>' 'true'  '</SignatureRequired>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<DeliveryConfirmation>' SHIPMENT-CARRIER-SIGNATURE '</DeliveryConfirmation>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<SignatureRequired>' ABAP_FALSE  '</SignatureRequired>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+  IF SHIPMENT-CARRIER-RESIDENTIALDEL IS   NOT INITIAL .
+    CONCATENATE '<ResidentialDelivery>' 'true' '</ResidentialDelivery>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<ResidentialDelivery>' 'false' '</ResidentialDelivery>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+
+  IF SHIPMENT-CARRIER-PAPERLESSINV IS NOT INITIAL.
+    CONCATENATE '<PaperLessInvoice>' 'true' '</PaperLessInvoice>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF CARRIERCONFIG-CARRIERTYPE = 'DHL'.
+      APPEND '<SpecialService>' TO LT_XML.
+      APPEND '<SpecialServiceType>WY</SpecialServiceType>' TO LT_XML.
+      APPEND '</SpecialService>' TO LT_XML.
+    ENDIF.
+  ELSE.
+    CONCATENATE '<PaperLessInvoice>' 'false' '</PaperLessInvoice>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+
+
+  CONCATENATE '<PrintCommercialInvoice>' 'NO' '</PrintCommercialInvoice>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+
+
+  IF SHIPMENT-CARRIER-COLLECTIONTYPE IS NOT INITIAL AND ( SHIPTO-COUNTRY <> SHIPPER-COUNTRY ).
+    DATA LV_COD TYPE CHAR11.
+    LV_COD = SHIPMENT-CARRIER-CODAMOUNT.
+    CONDENSE LV_COD.
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+      EXPORTING
+        INPUT  = LV_COD
+      IMPORTING
+        OUTPUT = LV_COD.
+
+    CONCATENATE '<CODAmount>' LV_COD '</CODAmount>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<CodCollectionType>' SHIPMENT-CARRIER-COLLECTIONTYPE '</CodCollectionType>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+    CONCATENATE '<CODCurrencyCode>' SHIPMENT-CURRENCYUNIT '</CODCurrencyCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+
+  ELSEIF SHIPMENT-CARRIER-COLLECTIONTYPE IS INITIAL.
+
+    APPEND '<CODAmount/>' TO LT_XML.
+    APPEND '<CodCollectionType/>' TO LT_XML.
+    APPEND '<CODCurrencyCode/>' TO LT_XML.
+  ENDIF.
+
+  IF SHIPMENT-CARRIER-DRYICEWEIGHT IS NOT INITIAL.
+    CONCATENATE '<DryIceWeight>' SHIPMENT-CARRIER-DRYICEWEIGHT '</DryIceWeight>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    APPEND '<DryIceWeight/>' TO LT_XML.
+  ENDIF.
+
+  CONCATENATE '<DryIceWeightUnits>' 'false' '</DryIceWeightUnits>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+  IF SHIPMENT-CARRIER-BSOFLAG IS NOT INITIAL.
+    CONCATENATE '<BrokerSelectOption>' 'true' '</BrokerSelectOption>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<BrokerSelectOption>' 'false' '</BrokerSelectOption>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+  IF SHIPMENT-CARRIER-HOLD IS NOT INITIAL.
+    CONCATENATE '<HoldAtLocation>' 'true' '</HoldAtLocation>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ELSE.
+    CONCATENATE '<HoldAtLocation>' 'false' '</HoldAtLocation>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+  ENDIF.
+  CONCATENATE '<EmailNotification>' 'false' '</EmailNotification>' INTO LS_XML.
+  APPEND LS_XML TO LT_XML.
+  CLEAR LS_XML.
+
+  APPEND '</SpecialServices>' TO LT_XML.
+
+  IF ( SHIPPER-COUNTRY <> SHIPMENT-SHIPTO-COUNTRY ).
+    APPEND '<InternationalDetail>' TO LT_XML.
+    CONCATENATE '<ITN>' SHIPMENT-CARRIER-ITNNUMBER '</ITN>' INTO LS_XML. APPEND LS_XML TO LT_XML.
+    LOOP AT LT_COMD INTO LS_COMD .
+      APPEND '<Commodities>' TO LT_XML.
+      CONCATENATE '<Description>' LS_COMD-CDESCRIPTION+0(35) '</Description>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CLEAR : TEMP_CHAR , LV_DEC .
+      LV_DEC  = LS_COMD-CQTY  .
+      TEMP_CHAR  = LV_DEC .
+      CONDENSE TEMP_CHAR.
+      CONCATENATE '<Quantity>'   TEMP_CHAR  '</Quantity>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CLEAR : TEMP_CHAR .
+      TEMP_CHAR =  LS_COMD-CWEIGHT.
+      CONDENSE TEMP_CHAR.
+      CONCATENATE '<Weight>' TEMP_CHAR '</Weight>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      IF LS_COMD-CMFR IS INITIAL.
+        LS_COMD-CMFR = SHIPPER-COUNTRY.
+      ENDIF.
+      CONCATENATE '<CountryOfManufacture>' LS_COMD-CMFR '</CountryOfManufacture>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CLEAR : TEMP_CHAR .
+      TEMP_CHAR = LS_COMD-CUNITVALUE.
+      CONDENSE TEMP_CHAR.
+      IF ( TEMP_CHAR IS INITIAL OR TEMP_CHAR = '0.00' ) AND ( CARRIERCONFIG-CARRIERTYPE = 'DHL' ).
+        MESSAGE 'Unit Price cant be Empty/0 for DHL' TYPE 'E' DISPLAY LIKE 'I'.
+      ENDIF.
+      CONCATENATE '<UnitPrice>' TEMP_CHAR '</UnitPrice>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<HarmonizedCode>' LS_COMD-HCODE '</HarmonizedCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      APPEND '<PartNumber/>' TO LT_XML.
+      APPEND '<ECCN/>' TO LT_XML.
+      APPEND '</Commodities>' TO LT_XML.
+    ENDLOOP .
+    CLEAR : TEMP_CHAR .
+    TEMP_CHAR = SHIPMENT-CARRIER-CUSTOMSVALUE.
+    CONDENSE TEMP_CHAR.
+    CONCATENATE '<Totalcustomvalue>' TEMP_CHAR '</Totalcustomvalue>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<InvoiceNumber>'  '</InvoiceNumber>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<InvoiceDate>'  '</InvoiceDate>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<PurchaseOrderNumber>'  '</PurchaseOrderNumber>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<ReasonForExport>' 'SOLD' '</ReasonForExport>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<CurrencyCode>' SHIPMENT-CURRENCYUNIT '</CurrencyCode>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF SHIPMENT-CARRIER-DUTYTAXCODE = 'SENDER'.
+      CONCATENATE '<DutiesPaymentType>' SHIPMENT-CARRIER-DUTYTAXCODE '</DutiesPaymentType>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesAccountNumber>' CARRIERCONFIG-ACCOUNTNUMBER '</DutiesAccountNumber>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesCountryCode>' SHIPPER-COUNTRY '</DutiesCountryCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesAccountZipCode>' SHIPPER-POSTALCODE '</DutiesAccountZipCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ELSEIF SHIPMENT-CARRIER-DUTYTAXCODE = 'RECIPIENT'.
+      CONCATENATE '<DutiesPaymentType>' SHIPMENT-CARRIER-DUTYTAXCODE '</DutiesPaymentType>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesAccountNumber>' SHIPMENT-CARRIER-DTAXACCOUNT '</DutiesAccountNumber>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesCountryCode>' SHIPTO-COUNTRY '</DutiesCountryCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesAccountZipCode>' SHIPTO-POSTALCODE '</DutiesAccountZipCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ELSEIF SHIPMENT-CARRIER-DUTYTAXCODE = 'THIRDPARTY'.
+      IF CARRIERCONFIG-CARRIERTYPE = 'FEDEX'.
+        CONCATENATE '<DutiesPaymentType>' 'THIRD_PARTY' '</DutiesPaymentType>' INTO LS_XML.
+      ELSE.
+        CONCATENATE '<DutiesPaymentType>' SHIPMENT-CARRIER-DUTYTAXCODE '</DutiesPaymentType>' INTO LS_XML.
+      ENDIF.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesAccountNumber>' SHIPMENT-CARRIER-DTAXACCOUNT '</DutiesAccountNumber>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesCountryCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-COUNTRY '</DutiesCountryCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+      CONCATENATE '<DutiesAccountZipCode>' SHIPMENT-CARRIER-THIRDPARTYADDRESS-POSTALCODE '</DutiesAccountZipCode>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ENDIF.
+
+    CONCATENATE '<FilingOption>' SHIPMENT-CARRIER-B13FILLING '</FilingOption>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    IF SHIPMENT-CARRIER-DOCUMENTS = 'X'.
+      CONCATENATE '<DocumentContent>' 'DOCUMENTS' '</DocumentContent>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ELSE.
+      CONCATENATE '<DocumentContent>' 'NON_DOCUMENTS' '</DocumentContent>' INTO LS_XML.
+      APPEND LS_XML TO LT_XML.
+      CLEAR LS_XML.
+    ENDIF.
+    CONCATENATE '<TermsOfSale>' SHIPMENT-SALETERMS '</TermsOfSale>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<BookingConfirmationNumber>' SHIPMENT-CARRIER-BOOKINGNUMBER '</BookingConfirmationNumber>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<DeclaredValue>' TEMP_CHAR  '</DeclaredValue>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    CONCATENATE '<DeclaredValueCurrency>' SHIPMENT-CURRENCYUNIT '</DeclaredValueCurrency>' INTO LS_XML.
+    APPEND LS_XML TO LT_XML.
+    CLEAR LS_XML.
+    APPEND '</InternationalDetail>' TO LT_XML.
+  ENDIF.
+
+  APPEND '</request>' TO LT_XML.
+
+  LOOP AT LT_XML INTO LS_XML.
+    REPLACE ALL OCCURRENCES OF '&' IN LS_XML WITH '&amp;'.
+    REPLACE ALL OCCURRENCES OF '''' IN LS_XML WITH '&apos;'.
+    MODIFY LT_XML FROM LS_XML INDEX SY-TABIX.
+    CONCATENATE REQUEST_XML LS_XML INTO REQUEST_XML .
+  ENDLOOP.
+
+  CLEAR: FILENAME.
+
+*If Special Service has return shipment means add below key words to the tname
+*RETURN - response contains only return label and return tracking numbers. SIG considers as separate return shipment
+*INCLUDERETURN - response contains label, tracking and return label,tracking numbers. SIG considers single shipment with both normal and return labels
+*  IF shipment-shipmenttype = 'R'.
+*    CONCATENATE communication_url-filename '_' 'INCLUDERETURN' INTO communication_url-filename.
+*  ENDIF.
+
+  CONCATENATE COMMUNICATION_URL-FILENAME '_' SHIPMENT-VBELN '_' SY-DATLO '_' SY-UZEIT '.xml' INTO  FILENAME.
+
+
+  CALL FUNCTION '/PWEAVER/PW_COMMUNICATION'
+    EXPORTING
+      SHIPPER          = SHIPPER
+      SHIPTO           = SHIPTO
+      SHIPMENT         = SHIPMENT
+      PRODUCT          = PRODUCT
+      CARRIERCONFIG    = CARRIERCONFIG
+      PRINTERCONFIG    = PRINTERCONFIG
+      WS_REQ           = REQUEST_XML
+      FILENAME         = FILENAME
+      PLANT            = CARRIERCONFIG-PLANT
+      ACTION           = 'SHIP'
+      CARRIER_URL      = COMMUNICATION_URL
+      XCARRIER         = XCARRIER
+      REQUEST_XML      = LT_XML
+    IMPORTING
+      RESPONSE_XML     = RESPONSE_XML
+      WS_RESP          = WS_RESP
+      TRACKINGINFO     = TRACKINGINFO
+      REQ_TOKENS       = SHIPMENT-REQ_TOKENS
+    TABLES
+      PACKAGES         = PACKAGES
+    EXCEPTIONS
+      CONNECTION_ERROR = 0
+      OTHERS           = 0.
+
+  IF COMMUNICATION_URL-COMMUNICATION = 'EXE'.
+    REFRESH LT_XML.
+    APPEND WS_RESP TO LT_XML.
+
+    PERFORM PARSE_SHIP_RESPONSE_EXE
+     TABLES  PACKAGES
+      USING  CARRIERCONFIG
+             COMMUNICATION_URL
+             SHIPMENT-SHIPMENTTYPE
+             SHIPMENT-REQ_TOKENS
+    CHANGING TRACKINGINFO
+             WS_RESP
+             LABELDATA1.
+  ENDIF.
+
+
+ENDFUNCTION.
+
+FORM PARSE_SHIP_RESPONSE_EXE TABLES  PACKAGES STRUCTURE /PWEAVER/ECSPACKAGES
+USING CARRIERCONFIG TYPE /PWEAVER/CCONFIG
+      CARRIER_URL TYPE /PWEAVER/SHIPURL
+      SHIPMENTTYPE TYPE /PWEAVER/ECSSHIPMENT-SHIPMENTTYPE
+      REQ_TOKENS TYPE /PWEAVER/TOKENS
+CHANGING TRACKINGINFO TYPE /PWEAVER/ECSTRACK
+  RESPONSE_XML TYPE STRING
+  LABELDATA TYPE /PWEAVER/LABELDATA_TAB.
+
+
+  CHECK RESPONSE_XML IS NOT INITIAL.
+  DATA:
+        LS_XML TYPE STRING.
+  DATA : RESP_XSTRING TYPE XSTRING.
+  DATA IMAGE_DATA TYPE STRING.
+
+  DATA: L_IXML          TYPE REF TO IF_IXML,
+        L_STREAMFACTORY TYPE REF TO IF_IXML_STREAM_FACTORY,
+        L_PARSER        TYPE REF TO IF_IXML_PARSER,
+        L_ISTREAM       TYPE REF TO IF_IXML_ISTREAM,
+        L_DOCUMENT      TYPE REF TO IF_IXML_DOCUMENT.
+
+  DATA: PARSEERROR TYPE REF TO IF_IXML_PARSE_ERROR,
+        I          TYPE I,
+        INDEX      TYPE I,
+        LEN        TYPE I.
+
+  DATA: NODE   TYPE REF TO IF_IXML_NODE,
+        NAME   TYPE STRING,
+        VALUE  TYPE STRING,
+        VALUE1 TYPE STRING.
+
+  DATA: NODETYPE  TYPE REF TO IF_IXML_NODE,
+        VALUETYPE TYPE STRING.
+
+
+  DATA : STR(100) TYPE C.
+  DATA : AMOUNT TYPE P DECIMALS 3.
+  DATA : STR_START TYPE I, STR_END TYPE I.
+
+
+  CL_TREX_CHAR_UTILITY=>CONVERT_TO_UTF8( EXPORTING IM_CHAR_STRING = RESPONSE_XML
+  IMPORTING EX_UTF8_STRING = RESP_XSTRING ).
+
+* Creating the main iXML factory
+  CALL METHOD CL_IXML=>CREATE
+    RECEIVING
+      RVAL = L_IXML.
+* Creating a stream factory
+  CALL METHOD L_IXML->CREATE_STREAM_FACTORY
+    RECEIVING
+      RVAL = L_STREAMFACTORY.
+* Create a stream
+  CALL METHOD L_STREAMFACTORY->CREATE_ISTREAM_XSTRING
+    EXPORTING
+      STRING = RESP_XSTRING
+    RECEIVING
+      RVAL   = L_ISTREAM.
+* Creating a document
+  CALL METHOD L_IXML->CREATE_DOCUMENT
+    RECEIVING
+      RVAL = L_DOCUMENT.
+* Create a Parser
+  CALL METHOD L_IXML->CREATE_PARSER
+    EXPORTING
+      DOCUMENT       = L_DOCUMENT
+      ISTREAM        = L_ISTREAM
+      STREAM_FACTORY = L_STREAMFACTORY
+    RECEIVING
+      RVAL           = L_PARSER.
+
+  DATA COUNT TYPE I.
+
+
+* If Parsing Failes
+  IF L_PARSER->PARSE( ) NE 0.
+    IF L_PARSER->NUM_ERRORS( ) NE 0.
+      COUNT = L_PARSER->NUM_ERRORS( ).
+      WRITE: COUNT, ' parse errors have occured:'.
+      INDEX = 0.
+      WHILE INDEX < COUNT.
+        PARSEERROR = L_PARSER->GET_ERROR( INDEX = INDEX ).
+        I = PARSEERROR->GET_LINE( ).
+        WRITE: 'line: ', I.
+        I = PARSEERROR->GET_COLUMN( ).
+        WRITE: 'column: ', I.
+        STR = PARSEERROR->GET_REASON( ).
+        WRITE: STR.
+        INDEX = INDEX + 1.
+      ENDWHILE.
+    ENDIF.
+    TRACKINGINFO-ERRORMESSAGE = STR.
+    RETURN.
+  ENDIF.
+
+  L_ISTREAM->CLOSE( ).
+
+**Rest api Access Tokens
+  DATA: LS_TOKENS TYPE /PWEAVER/TOKENS.
+  CLEAR LS_TOKENS.
+  NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'AccessToken' ).
+  IF NOT NODE IS INITIAL.
+    NAME = NODE->GET_NAME( ).
+    IF NAME = 'AccessToken'.
+      VALUE = NODE->GET_VALUE( ).
+      LS_TOKENS-ACCESS_TOKEN = VALUE.
+    ENDIF.
+    CLEAR VALUE.
+  ENDIF.
+
+  NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'RefreshToken' ).
+  IF NOT NODE IS INITIAL.
+    NAME = NODE->GET_NAME( ).
+    IF NAME = 'RefreshToken'.
+      VALUE = NODE->GET_VALUE( ).
+      LS_TOKENS-REFRESH_TOKEN = VALUE.
+    ENDIF.
+    CLEAR VALUE.
+  ENDIF.
+  IF LS_TOKENS IS NOT INITIAL.
+    DATA: LV_ACCESS  TYPE STRING,
+          LV_REFRESH TYPE STRING.
+
+    LV_ACCESS = LS_TOKENS-ACCESS_TOKEN.
+    LV_REFRESH = LS_TOKENS-REFRESH_TOKEN.
+    CALL FUNCTION '/PWEAVER/UPDATE_ACCESS_TOKEN'
+      EXPORTING
+        CARRIERCONFIG = CARRIERCONFIG
+        ACCESS_TOKEN  = LV_ACCESS
+        REFRESH_TOKEN = LV_REFRESH
+        REQ_TOKENS    = REQ_TOKENS.
+  ENDIF.
+**Rest API Access Tokens
+
+
+  NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'faultstring' ).
+  IF NOT NODE IS INITIAL.
+    NAME = NODE->GET_NAME( ).
+    IF NAME = 'faultstring'.
+      VALUE = NODE->GET_VALUE( ).
+      TRACKINGINFO-ERRORMESSAGE = VALUE.
+    ENDIF.
+    CLEAR VALUE.
+    IF   TRACKINGINFO-ERRORMESSAGE IS NOT INITIAL.
+      RETURN.
+    ENDIF.
+  ENDIF.
+***Nevigate to the 'DATA' node of xml
+  IF  CARRIER_URL-CARRIERTYPE <> 'GENERIC' .
+    NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'Error' ).
+    IF NOT NODE IS INITIAL.
+      NAME = NODE->GET_NAME( ).
+      IF NAME = 'Error'.
+        VALUE = NODE->GET_VALUE( ).
+        TRACKINGINFO-ERRORMESSAGE = VALUE.
+      ENDIF.
+      CLEAR VALUE.
+      RETURN.
+    ENDIF.
+  ENDIF.
+
+
+
+  NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'SIN' ).
+  IF NOT NODE IS INITIAL.
+    NAME = NODE->GET_NAME( ).
+    IF NAME = 'SIN'.
+      VALUE = NODE->GET_VALUE( ).
+      TRACKINGINFO-MASTERTRACKING = VALUE.
+      TRACKINGINFO-TRACKINGNUMBER = VALUE.
+
+
+    ELSE.
+      NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'MasterTracking' ).
+      IF NOT NODE IS INITIAL.
+        NAME = NODE->GET_NAME( ).
+        IF NAME = 'MasterTracking'.
+          VALUE = NODE->GET_VALUE( ).
+          TRACKINGINFO-MASTERTRACKING = VALUE.
+          TRACKINGINFO-TRACKINGNUMBER = VALUE.
+        ENDIF.
+        CLEAR VALUE.
+      ENDIF.
+
+
+
+    ENDIF.
+    CLEAR VALUE.
+  ENDIF.
+
+
+*COMMENTED 05.03.2018
+*  node = l_document->find_from_name( name = 'Carrier' ).
+*  name = node->get_name( ).
+*  value = node->get_value( ).
+*  if value = 'FEDEX' OR value = 'UPS'.
+*  node = l_document->find_from_name( name = 'SIN' ).
+*  IF NOT node IS INITIAL.
+*    name = node->get_name( ).
+*    IF name = 'SIN'.
+*      value = node->get_value( ).
+*      trackinginfo-mastertracking = value.
+*      trackinginfo-trackingnumber = value.
+*    ENDIF.
+*    CLEAR value.
+*  ENDIF.
+*  else.
+*
+*   node = l_document->find_from_name( name = 'MasterTracking' ).
+*  IF NOT node IS INITIAL.
+*    name = node->get_name( ).
+*    IF name = 'MasterTracking'.
+*      value = node->get_value( ).
+*      trackinginfo-mastertracking = value.
+*      trackinginfo-trackingnumber = value.
+*    ENDIF.
+*    CLEAR value.
+*  ENDIF.
+*
+*    endif.
+
+*    COMMENTED 05.03.2018
+
+*  node = l_document->find_from_name( name = 'MasterTracking' ).
+*  IF NOT node IS INITIAL.
+*    name = node->get_name( ).
+*    IF name = 'MasterTracking'.
+*      value = node->get_value( ).
+*      trackinginfo-mastertracking = value.
+*      trackinginfo-trackingnumber = value.
+*    ENDIF.
+*    CLEAR value.
+*  ENDIF.
+
+
+
+
+*  ***  18/12/2017****
+  DATA: FREIGHTLENGTH TYPE REF TO IF_IXML_NODE_COLLECTION.
+  FREIGHTLENGTH = L_DOCUMENT->GET_ELEMENTS_BY_TAG_NAME(  NAME = 'Freight').
+*
+  DATA: LENGTH TYPE I.
+*
+*  length  = Freightlength->get_length( ).
+*  CLEAR index.
+*  WHILE index < length.
+*    node = Freightlength->get_item( index = index ).
+*    value = node->get_value( ).
+*    index = index + 1.
+*
+*    READ TABLE packages INDEX index.
+*    IF sy-subrc = 0.
+*      packages-freight = value.
+*
+*
+*
+*      MODIFY packages INDEX index TRANSPORTING freight.
+*    ENDIF.
+*  ENDWHILE.
+
+*  ***  18/12/2017****
+
+  LENGTH  = FREIGHTLENGTH->GET_LENGTH( ).    "18/12/2017
+
+  NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'Freight' ).
+
+  IF NOT NODE IS INITIAL.
+    NAME = NODE->GET_NAME( ).
+    IF NAME = 'Freight'.
+*       CLEAR index.  "18/12/2017
+*  WHILE index < length."18/12/2017
+      VALUE = NODE->GET_VALUE( ).
+      INDEX = INDEX + 1.
+      TRACKINGINFO-FREIGHTAMT =  VALUE.
+      IF TRACKINGINFO-FREIGHTAMT CA 'INR' OR TRACKINGINFO-FREIGHTAMT CA 'USD'.
+        TRACKINGINFO-FREIGHTAMT = TRACKINGINFO-FREIGHTAMT+3(15).
+      ELSE.
+        TRACKINGINFO-FREIGHTAMT = TRACKINGINFO-FREIGHTAMT.
+      ENDIF.
+
+*        endwhile. "18/12/2017
+    ENDIF.
+    CLEAR VALUE.
+  ENDIF.
+
+  NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'TotalFreight' ).
+  IF NOT NODE IS INITIAL.
+    NAME = NODE->GET_NAME( ).
+    IF NAME = 'TotalFreight' .
+      VALUE = NODE->GET_VALUE( ).
+      IF CARRIERCONFIG-CARRIERTYPE = 'FEDEX'.
+*        len = strlen( value ).
+*        len = len - 3.
+        IF VALUE IS NOT INITIAL.
+          TRACKINGINFO-FREIGHTAMT = VALUE. "+3(len).
+          TRACKINGINFO-WAERK = VALUE(3).
+        ENDIF.
+      ELSE.
+        TRACKINGINFO-FREIGHTAMT = VALUE.
+      ENDIF.
+      IF TRACKINGINFO-FREIGHTAMT CA 'INR' OR TRACKINGINFO-FREIGHTAMT CA 'USD'.
+        TRACKINGINFO-FREIGHTAMT = TRACKINGINFO-FREIGHTAMT+3(15).
+      ELSE.
+        TRACKINGINFO-FREIGHTAMT = TRACKINGINFO-FREIGHTAMT.
+      ENDIF.
+    ENDIF.
+    CLEAR VALUE.
+  ENDIF.
+
+  NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'TotalDiscountedFreight' ).
+  IF NOT NODE IS INITIAL.
+    NAME = NODE->GET_NAME( ).
+    IF NAME = 'TotalDiscountedFreight'.
+
+      VALUE = NODE->GET_VALUE( ).
+      CLEAR LEN.
+*      len = strlen( value ).
+*      len = len - 3.
+      IF VALUE IS NOT INITIAL.
+        IF CARRIERCONFIG-CARRIERTYPE = 'FEDEX'.
+          TRACKINGINFO-DISCOUNTAMT = VALUE. "+3(len).
+        ELSE.
+          TRACKINGINFO-DISCOUNTAMT = VALUE.
+        ENDIF.
+
+        IF TRACKINGINFO-DISCOUNTAMT CA 'INR' OR TRACKINGINFO-DISCOUNTAMT CA 'USD'.
+          TRACKINGINFO-DISCOUNTAMT = TRACKINGINFO-DISCOUNTAMT+3(15).
+        ELSE.
+          TRACKINGINFO-DISCOUNTAMT = TRACKINGINFO-DISCOUNTAMT.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+    CLEAR VALUE.
+  ENDIF.
+****
+
+  NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'CurrencyCode' ).
+  IF NOT NODE IS INITIAL.
+    NAME = NODE->GET_NAME( ).
+    IF NAME = 'CurrencyCode'.
+      VALUE = NODE->GET_VALUE( ).
+      TRACKINGINFO-WAERK = VALUE.
+    ENDIF.
+    CLEAR VALUE.
+  ENDIF.
+***8
+  IF CARRIERCONFIG-CARRIERTYPE = 'UPS' AND TRACKINGINFO-DISCOUNTAMT IS INITIAL.
+    NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'DiscountedFreight' ).
+    IF NOT NODE IS INITIAL.
+      NAME = NODE->GET_NAME( ).
+      IF NAME = 'DiscountedFreight'.
+
+        VALUE = NODE->GET_VALUE( ).
+        TRACKINGINFO-DISCOUNTAMT =  VALUE.
+        IF TRACKINGINFO-DISCOUNTAMT CA 'INR' OR TRACKINGINFO-DISCOUNTAMT CA 'USD'.
+          TRACKINGINFO-DISCOUNTAMT = TRACKINGINFO-DISCOUNTAMT+3(15).
+        ELSE.
+          TRACKINGINFO-DISCOUNTAMT = TRACKINGINFO-DISCOUNTAMT.
+        ENDIF.
+*        CLEAR len.
+*        len = strlen( value ).
+*        len = len - 3.
+*        trackinginfo-discountamt = value.
+      ENDIF.
+      CLEAR VALUE.
+    ENDIF.
+  ENDIF.
+
+  "for discountamt   "DiscountFreight" tag from carrier
+  IF CARRIERCONFIG-CARRIERTYPE = 'FEDEX' AND TRACKINGINFO-DISCOUNTAMT IS INITIAL.
+    NODE = L_DOCUMENT->FIND_FROM_NAME( NAME = 'DiscountFreight' ).
+    IF NOT NODE IS INITIAL.
+      NAME = NODE->GET_NAME( ).
+      IF NAME = 'DiscountFreight'.   "DiscounFreight
+        VALUE = NODE->GET_VALUE( ).
+        TRACKINGINFO-DISCOUNTAMT =  VALUE.
+        IF TRACKINGINFO-DISCOUNTAMT CA 'INR' OR TRACKINGINFO-DISCOUNTAMT CA 'USD'.
+          TRACKINGINFO-DISCOUNTAMT = TRACKINGINFO-DISCOUNTAMT+3(15).
+        ELSE.
+          TRACKINGINFO-DISCOUNTAMT = TRACKINGINFO-DISCOUNTAMT.
+        ENDIF.
+
+*        CLEAR len.
+*        len = strlen( value ).
+*        len = len - 3.
+*        trackinginfo-discountamt = value.
+*          trackinginfo-discountamt = trackinginfo-discountamt.
+
+      ENDIF.
+      CLEAR VALUE.
+    ENDIF.
+  ENDIF.
+
+
+
+*****label data****
+*  node = l_document->find_from_name( name = 'ImageData' ).
+*  if not node is initial.
+*    name = node->get_name( ).
+*    if name = 'ImageData'.
+*      value = node->get_value( ).
+*
+*      IMAGE_DATA = value.
+*      APPEND IMAGE_DATA TO LT_IMAGE_DATA.
+*      CLEAR: IMAGE_DATA.
+*
+*    endif.
+*    clear value.
+*  endif.
+
+***eoc label data
+
+  DATA: TRACKING TYPE REF TO IF_IXML_NODE_COLLECTION.
+
+  IF CARRIERCONFIG-CARRIERTYPE = 'SFX'.
+    TRACKING = L_DOCUMENT->GET_ELEMENTS_BY_TAG_NAME(  NAME = 'TrackingNo').
+  ELSE.
+    TRACKING = L_DOCUMENT->GET_ELEMENTS_BY_TAG_NAME(  NAME = 'TrackingNumber').
+  ENDIF.
+
+
+
+*  DATA: length TYPE i.
+
+  LENGTH  = TRACKING->GET_LENGTH( ).
+  CLEAR INDEX.
+  WHILE INDEX < LENGTH.
+    NODE = TRACKING->GET_ITEM( INDEX = INDEX ).
+    VALUE = NODE->GET_VALUE( ).
+    INDEX = INDEX + 1.
+
+    READ TABLE PACKAGES INDEX INDEX.
+    IF SY-SUBRC = 0.
+      PACKAGES-TRACKINGNUMBER = VALUE.
+      IF TRACKINGINFO-TRACKINGNUMBER IS INITIAL.
+        TRACKINGINFO-TRACKINGNUMBER = VALUE.
+      ENDIF.
+      IF SHIPMENTTYPE = 'R'.
+        PACKAGES-RETURN_TRACK = VALUE.
+      ENDIF.
+
+      MODIFY PACKAGES INDEX INDEX TRANSPORTING TRACKINGNUMBER RETURN_TRACK.
+    ENDIF.
+  ENDWHILE.
+
+
+  DATA: DOCURL  TYPE REF TO IF_IXML_NODE_COLLECTION,
+        DOCTYPE TYPE REF TO IF_IXML_NODE_COLLECTION.
+  DOCURL  = L_DOCUMENT->GET_ELEMENTS_BY_TAG_NAME(  NAME = 'ImageUrl').
+*    doctype  = l_document->get_elements_by_tag_name(  name = 'DOCUMENTTYPE').
+  LENGTH  = DOCURL->GET_LENGTH( ).
+  CLEAR INDEX.
+  WHILE INDEX < LENGTH.
+
+*    nodetype = doctype->get_item( index = index ).
+*    valuetype = nodetype->get_value( ).
+*    if valuetype = 'Label'.
+    NODE = DOCURL->GET_ITEM( INDEX = INDEX ).
+    VALUE = NODE->GET_VALUE( ).
+*endif.
+    INDEX = INDEX + 1.
+    READ TABLE PACKAGES INDEX INDEX.
+    IF SY-SUBRC = 0.
+      PACKAGES-URL = VALUE.
+
+      MODIFY PACKAGES INDEX INDEX TRANSPORTING URL.
+
+    ENDIF.
+*else.
+*  index = index + 1.
+*skip.
+*  endif.
+
+  ENDWHILE.
+
+
+*  DATA: docurl TYPE REF TO if_ixml_node_collection.
+  DOCURL  = L_DOCUMENT->GET_ELEMENTS_BY_TAG_NAME(  NAME = 'DOCUMENTURL').
+  LENGTH  = DOCURL->GET_LENGTH( ).
+  CLEAR INDEX.
+  WHILE INDEX < LENGTH.
+    NODE = DOCURL->GET_ITEM( INDEX = INDEX ).
+*    value = node->get_value( ).
+    INDEX = INDEX + 1.
+    READ TABLE PACKAGES INDEX INDEX.
+    IF SY-SUBRC = 0.
+      IF NOT NODE IS INITIAL.
+        NAME = NODE->GET_NAME( ).
+        IF NAME = 'DOCUMENTURL'.
+          VALUE = NODE->GET_VALUE( ).
+          PACKAGES-URL = VALUE.
+        ENDIF.
+        MODIFY PACKAGES INDEX INDEX TRANSPORTING URL.
+        CLEAR VALUE.
+      ENDIF.
+    ENDIF.
+  ENDWHILE.
+**********added on 18/09/2017
+
+  DATA: IMAGEDATA TYPE REF TO IF_IXML_NODE_COLLECTION.
+  DATA : LS_LABELDATA TYPE /PWEAVER/LABELDATA.
+*if CARRIERCONFIG-labelimagetype = 'ZPL' AND ( CARRIERCONFIG-CARRIERTYPE = 'DHL' or Carrier_url-CARRIERTYPE = 'GENERIC' ).
+
+  IMAGEDATA = L_DOCUMENT->GET_ELEMENTS_BY_TAG_NAME(  NAME = 'ZPLImageData').   "ZPL
+  LENGTH  = IMAGEDATA->GET_LENGTH( ).
+  CLEAR INDEX.
+  WHILE INDEX < LENGTH.
+    NODE = IMAGEDATA->GET_ITEM( INDEX = INDEX ).
+    VALUE = NODE->GET_VALUE( ).
+    INDEX = INDEX + 1.
+
+    READ TABLE PACKAGES INDEX INDEX.
+    IF SY-SUBRC = 0.
+      LS_LABELDATA-VBELN = PACKAGES-DELIVERY_NUMBER.
+      LS_LABELDATA-EXIDV = PACKAGES-HANDLING_UNIT.
+      LS_LABELDATA-POSNR = INDEX.
+      LS_LABELDATA-TRACKINGNUMBER = PACKAGES-TRACKINGNUMBER.
+      LS_LABELDATA-IMAGETYPE = CARRIERCONFIG-LABELIMAGETYPE.
+      IF CARRIERCONFIG-LABEL_COPIES IS INITIAL.
+        CARRIERCONFIG-LABEL_COPIES = 1.
+      ENDIF.
+      LS_LABELDATA-COPIESTOPRINT = CARRIERCONFIG-LABEL_COPIES.
+      LS_LABELDATA-LABELIMAGE = VALUE.
+      LS_LABELDATA-LABELNAME  = PACKAGES-LABELNAME.
+      APPEND LS_LABELDATA TO LABELDATA.
+    ENDIF.
+  ENDWHILE.
+
+*else.
+  IF LENGTH IS INITIAL.
+    IMAGEDATA = L_DOCUMENT->GET_ELEMENTS_BY_TAG_NAME(  NAME = 'ImageData').
+    LENGTH  = IMAGEDATA->GET_LENGTH( ).
+    CLEAR INDEX.
+    WHILE INDEX < LENGTH.
+      NODE = IMAGEDATA->GET_ITEM( INDEX = INDEX ).
+      VALUE = NODE->GET_VALUE( ).
+      INDEX = INDEX + 1.
+
+      READ TABLE PACKAGES INDEX INDEX.
+      IF SY-SUBRC = 0.
+        LS_LABELDATA-VBELN = PACKAGES-DELIVERY_NUMBER.
+        LS_LABELDATA-EXIDV = PACKAGES-HANDLING_UNIT.
+        LS_LABELDATA-POSNR = INDEX.
+        LS_LABELDATA-TRACKINGNUMBER = PACKAGES-TRACKINGNUMBER.
+        LS_LABELDATA-IMAGETYPE = CARRIERCONFIG-LABELIMAGETYPE.
+        IF CARRIERCONFIG-LABEL_COPIES IS INITIAL.
+          CARRIERCONFIG-LABEL_COPIES = 1.
+        ENDIF.
+        LS_LABELDATA-COPIESTOPRINT = CARRIERCONFIG-LABEL_COPIES.
+        LS_LABELDATA-LABELIMAGE = VALUE.
+        LS_LABELDATA-LABELNAME  = PACKAGES-LABELNAME.
+        APPEND LS_LABELDATA TO LABELDATA.
+      ENDIF.
+    ENDWHILE.
+
+  ENDIF.
+*  endif.
+*data: deliverydate type ref to if_ixml_node_collection.
+*deliverydate = l_document->get_elements_by_tag_name(  name = 'TrackingNumber').
+**
+* LENGTH  = deliverydate->GET_LENGTH( ).
+*clear index.
+*  WHILE INDEX < LENGTH.
+*    node = deliverydate->get_item( index = index ).
+*    value = node->get_value( ).
+*    index = index + 1.
+*    read table packages index index.
+*    if sy-subrc = 0.
+*       packages-deliverydate = value.
+*     modify packages index index transporting deliverydate.
+*    endif.
+*  endwhile.
+
+
+ENDFORM.
